@@ -309,87 +309,129 @@ export class PlurkProvider extends SocialAbstract implements SocialProvider {
         return data.full || data.url || '';
     }
 
+    private async postPlurkContent(
+        token: string,
+        tokenSecret: string,
+        post: PostDetails
+    ): Promise<{ plurk_id: number }> {
+        const consumerKey = process.env.PLURK_CONSUMER_KEY!;
+        const consumerSecret = process.env.PLURK_CONSUMER_SECRET!;
+
+        const uploadedImageUrls: string[] = [];
+        if (post.media && post.media.length > 0) {
+            for (const media of post.media) {
+                if (media.type === 'image') {
+                    const imageUrl = await this.uploadPicture(token, tokenSecret, media.path);
+                    if (imageUrl) {
+                        uploadedImageUrls.push(imageUrl);
+                    }
+                }
+            }
+        }
+
+        let content = post.message;
+        if (uploadedImageUrls.length > 0) {
+            content += '\n' + uploadedImageUrls.join('\n');
+        }
+
+        const qualifier = post.settings?.qualifier || ':';
+        const lang = post.settings?.lang || 'tr_ch';
+
+        const result = await this.oauthRequest(
+            'POST',
+            'https://www.plurk.com/APP/Timeline/plurkAdd',
+            consumerKey,
+            consumerSecret,
+            token,
+            tokenSecret,
+            { content, qualifier, lang }
+        );
+
+        const validJson = result.replace(/new\sDate\((.*?)\)/g, '"$1"');
+        const data = JSON.parse(validJson);
+
+        if (data.error_text) {
+            throw new Error(data.error_text);
+        }
+
+        return data;
+    }
+
     async post(
         id: string,
         accessToken: string,
         postDetails: PostDetails[]
     ): Promise<PostResponse[]> {
         const [token, tokenSecret] = accessToken.split(':');
+        const [firstPost] = postDetails;
+
+        const data = await this.postPlurkContent(token, tokenSecret, firstPost);
+
+        return [{
+            id: firstPost.id,
+            postId: String(data.plurk_id),
+            releaseURL: `https://www.plurk.com/p/${data.plurk_id.toString(36)}`,
+            status: 'posted',
+        }];
+    }
+
+    async comment(
+        id: string,
+        postId: string,
+        lastCommentId: string | undefined,
+        accessToken: string,
+        postDetails: PostDetails[]
+    ): Promise<PostResponse[]> {
+        const [token, tokenSecret] = accessToken.split(':');
         const consumerKey = process.env.PLURK_CONSUMER_KEY!;
         const consumerSecret = process.env.PLURK_CONSUMER_SECRET!;
-        const plurkAddUrl = 'https://www.plurk.com/APP/Timeline/plurkAdd';
+        const [commentPost] = postDetails;
 
-        const responses: PostResponse[] = [];
-
-        for (const post of postDetails) {
-            try {
-                // Upload images if present
-                const uploadedImageUrls: string[] = [];
-                if (post.media && post.media.length > 0) {
-                    for (const media of post.media) {
-                        // Only upload images, skip videos for now
-                        if (media.type === 'image') {
-                            const imageUrl = await this.uploadPicture(
-                                token,
-                                tokenSecret,
-                                media.path
-                            );
-                            if (imageUrl) {
-                                uploadedImageUrls.push(imageUrl);
-                            }
-                        }
+        const uploadedImageUrls: string[] = [];
+        if (commentPost.media && commentPost.media.length > 0) {
+            for (const media of commentPost.media) {
+                if (media.type === 'image') {
+                    const imageUrl = await this.uploadPicture(token, tokenSecret, media.path);
+                    if (imageUrl) {
+                        uploadedImageUrls.push(imageUrl);
                     }
                 }
-
-                // Build content with images
-                // Plurk automatically detects and renders image URLs in the content
-                let content = post.message;
-                if (uploadedImageUrls.length > 0) {
-                    // Append image URLs to the content
-                    // Plurk will automatically render them as images
-                    content += '\n' + uploadedImageUrls.join('\n');
-                }
-
-                const qualifier = post.settings?.qualifier || ':';
-                const lang = post.settings?.lang || 'tr_ch';
-
-                const result = await this.oauthRequest(
-                    'POST',
-                    plurkAddUrl,
-                    consumerKey,
-                    consumerSecret,
-                    token,
-                    tokenSecret,
-                    {
-                        content: content,
-                        qualifier: qualifier,
-                        lang: lang
-                    }
-                );
-
-                // Plurk returns weird JSON sometimes with new Date(), handle if needed but usually standard JSON for this endpoint?
-                // Documentation says returns JSON object of the Plurk
-                const validJson = result.replace(/new\sDate\((.*?)\)/g, '"$1"');
-                const data = JSON.parse(validJson);
-
-                if (data.error_text) {
-                    throw new Error(data.error_text);
-                }
-
-                responses.push({
-                    id: post.id,
-                    postId: String(data.plurk_id),
-                    releaseURL: `https://www.plurk.com/p/${data.plurk_id.toString(36)}`, // Plurk URL format
-                    status: 'posted'
-                });
-
-            } catch (e) {
-                // Handle error
-                console.error(e);
-                throw e;
             }
         }
 
-        return responses;
+        let content = commentPost.message;
+        if (uploadedImageUrls.length > 0) {
+            content += '\n' + uploadedImageUrls.join('\n');
+        }
+
+        const qualifier = commentPost.settings?.qualifier || ':';
+
+        const result = await this.oauthRequest(
+            'POST',
+            'https://www.plurk.com/APP/Responses/responseAdd',
+            consumerKey,
+            consumerSecret,
+            token,
+            tokenSecret,
+            {
+                plurk_id: postId,
+                content,
+                qualifier,
+            }
+        );
+
+        const validJson = result.replace(/new\sDate\((.*?)\)/g, '"$1"');
+        const data = JSON.parse(validJson);
+
+        if (data.error_text) {
+            throw new Error(data.error_text);
+        }
+
+        return [{
+            id: commentPost.id,
+            postId: String(data.id),
+            releaseURL: `https://www.plurk.com/p/${Number(postId).toString(36)}`,
+            status: 'posted',
+        }];
     }
 }
