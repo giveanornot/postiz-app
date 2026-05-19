@@ -78,6 +78,20 @@ export class RefreshIntegrationService {
       .catch((err) => false);
 
     if (!refresh || !refresh.accessToken) {
+      // Plurk uses long-lived OAuth 1.0a tokens and does not support token refresh.
+      // If a generic refresh path reaches here, keep the existing connection instead
+      // of marking the channel invalid and disconnecting it.
+      if (integration.providerIdentifier === 'plurk') {
+        return {
+          id: integration.internalId,
+          name: integration.name,
+          username: integration.profile || integration.internalId,
+          accessToken: integration.token,
+          refreshToken: integration.refreshToken || '',
+          expiresIn: 999999999,
+        };
+      }
+
       await this._integrationService.refreshNeeded(
         integration.organizationId,
         integration.id
