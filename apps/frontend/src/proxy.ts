@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getCookieUrlFromDomain } from '@gitroom/helpers/subdomain/subdomain.management';
+import {
+  getCookieUrlFromDomain,
+  getLegacyCookieUrlFromDomain,
+} from '@gitroom/helpers/subdomain/subdomain.management';
 import { internalFetch } from '@gitroom/helpers/utils/internal.fetch';
 import acceptLanguage from 'accept-language';
 import {
@@ -34,6 +37,38 @@ export async function proxy(request: NextRequest) {
       headers: requestHeaders,
     },
   });
+
+  // Releases before cookie scoping used the registrable domain for Postiz's
+  // auth cookie. Expire it once so it is no longer sent to unrelated services.
+  const cookieScopeMigration = 'postiz_cookie_scope_v1';
+  if (
+    request.cookies.has('auth') &&
+    !request.cookies.has(cookieScopeMigration)
+  ) {
+    topResponse.cookies.set('auth', '', {
+      path: '/',
+      ...(!process.env.NOT_SECURED
+        ? {
+            secure: true,
+            httpOnly: true,
+            sameSite: false,
+          }
+        : {}),
+      maxAge: -1,
+      domain: getLegacyCookieUrlFromDomain(process.env.FRONTEND_URL!),
+    });
+    topResponse.cookies.set(cookieScopeMigration, '1', {
+      path: '/',
+      ...(!process.env.NOT_SECURED
+        ? {
+            secure: true,
+            httpOnly: true,
+            sameSite: 'lax',
+          }
+        : {}),
+      maxAge: 60 * 60 * 24 * 365,
+    });
+  }
 
   if (lng) {
     topResponse.headers.set(cookieName, lng);
